@@ -299,6 +299,195 @@ def test_viewer_reconstructs_ws_output_from_output_item_done_when_completed_outp
     assert "Recovered from ws_events" in detail_text
 
 
+def test_viewer_normalizes_generic_responses_tool_call_items(responses_page) -> None:
+    result = responses_page.evaluate(
+        """() => {
+          const body = {
+            input: [
+              { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Search the docs.' }] },
+              { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'Responses items' } },
+              {
+                type: 'computer_call_output',
+                call_id: 'call_screen',
+                output: { type: 'computer_screenshot', image_url: 'https://example.test/screen.png' }
+              }
+            ]
+          };
+          const output = normalizeResponseOutput([
+            { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'Responses items' } },
+            { type: 'file_search_call', status: 'completed', queries: ['viewer parser'] },
+            { type: 'custom_tool_call', status: 'completed', name: 'deploy_preview' }
+          ]);
+          const messages = getMessages(body);
+          return {
+            responseNames: output.content.filter(block => block.type === 'tool_use').map(block => block.name),
+            responseInputs: output.content.filter(block => block.type === 'tool_use').map(block => block.input),
+            roles: messages.map(message => message.role),
+            renderedMessages: renderMessages(messages)
+          };
+        }"""
+    )
+
+    assert result["responseNames"] == ["web_search", "file_search", "deploy_preview"]
+    assert result["responseInputs"][0] == {"action": {"type": "search", "query": "Responses items"}}
+    assert result["roles"] == ["user", "assistant", "tool"]
+    assert "web_search" in result["renderedMessages"]
+    assert "computer_screenshot" in result["renderedMessages"]
+
+
+def test_viewer_renders_codex_tool_search_call_and_output(responses_page) -> None:
+    result = responses_page.evaluate(
+        """() => {
+          const record = {
+            request_id: 'req_tool_search',
+            turn: 7,
+            transport: 'websocket',
+            request: {
+              method: 'WEBSOCKET',
+              path: '/backend-api/codex/responses',
+              headers: {},
+              body: {
+                type: 'response.create',
+                model: 'gpt-5.5',
+                input: [],
+                stream: true
+              },
+              ws_events: [
+                {
+                  type: 'response.create',
+                  model: 'gpt-5.5',
+                  input: [
+                    {
+                      type: 'message',
+                      role: 'user',
+                      content: [{ type: 'input_text', text: 'Find browser automation tools.' }]
+                    }
+                  ],
+                  tools: [{ type: 'tool_search', description: '# Tool discovery' }],
+                  stream: true
+                },
+                {
+                  type: 'response.create',
+                  model: 'gpt-5.5',
+                  previous_response_id: 'resp_search',
+                  input: [
+                    {
+                      type: 'tool_search_output',
+                      call_id: 'call_search',
+                      status: 'completed',
+                      execution: 'client',
+                      tools: [
+                        {
+                          type: 'namespace',
+                          name: 'mcp__codex_apps__figma',
+                          tools: [
+                            { type: 'function', name: '_use_figma' },
+                            { type: 'function', name: '_generate_figma_design' }
+                          ]
+                        }
+                      ]
+                    }
+                  ],
+                  tools: [
+                    { type: 'tool_search', description: '# Tool discovery' },
+                    { type: 'namespace', name: 'mcp__codex_apps__figma' }
+                  ],
+                  stream: true
+                }
+              ]
+            },
+            response: {
+              status: 101,
+              headers: {},
+              body: {},
+              ws_events: [
+                { type: 'response.created', response: { id: 'resp_search', status: 'in_progress', model: 'gpt-5.5' } },
+                {
+                  type: 'response.output_item.done',
+                  output_index: 0,
+                  item: {
+                    id: 'tsc_1',
+                    type: 'tool_search_call',
+                    status: 'completed',
+                    arguments: { query: 'browser automation screenshot localhost plugin tool', limit: 5 },
+                    call_id: 'call_search',
+                    execution: 'client'
+                  }
+                },
+                {
+                  type: 'response.completed',
+                  response: {
+                    id: 'resp_search',
+                    status: 'completed',
+                    model: 'gpt-5.5',
+                    output: [],
+                    usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+                  }
+                },
+                {
+                  type: 'response.created',
+                  response: {
+                    id: 'resp_final',
+                    status: 'in_progress',
+                    model: 'gpt-5.5',
+                    previous_response_id: 'resp_search'
+                  }
+                },
+                {
+                  type: 'response.output_item.done',
+                  output_index: 0,
+                  item: {
+                    id: 'msg_final',
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'Use the Figma namespace.' }]
+                  }
+                },
+                {
+                  type: 'response.completed',
+                  response: {
+                    id: 'resp_final',
+                    status: 'completed',
+                    model: 'gpt-5.5',
+                    previous_response_id: 'resp_search',
+                    output: [],
+                    usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 }
+                  }
+                }
+              ]
+            }
+          };
+          const expanded = expandWebSocketResponseEntries([record]);
+          renderDetail(expanded[0]);
+          const firstDetail = document.querySelector('#detail').innerText;
+          renderDetail(expanded[1]);
+          const secondDetail = document.querySelector('#detail').innerText;
+          const responseToolNames = expanded.flatMap(e =>
+            (getResponseOutput(e)?.content || [])
+              .filter(block => block.type === 'tool_use')
+              .map(block => block.name)
+          );
+          return {
+            entryCount: expanded.length,
+            firstDetail,
+            secondDetail,
+            secondRoles: getMessages(expanded[1].request.body).map(message => message.role),
+            responseToolNames
+          };
+        }"""
+    )
+
+    assert result["entryCount"] == 2
+    assert "tool_search" in result["firstDetail"]
+    assert "browser automation screenshot localhost plugin tool" in result["firstDetail"]
+    assert "limit" in result["firstDetail"]
+    assert "tool_search_output" in result["secondDetail"]
+    assert "mcp__codex_apps__figma" in result["secondDetail"]
+    assert "mcp__codex_apps__figma._use_figma" in result["secondDetail"]
+    assert result["secondRoles"] == ["user", "assistant", "tool"]
+    assert result["responseToolNames"] == ["tool_search"]
+
+
 def test_viewer_labels_codex_request_input_as_context_when_response_output_missing(
     responses_page,
 ) -> None:

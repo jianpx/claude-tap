@@ -135,6 +135,78 @@ def _parse_function_call_arguments(arguments: object) -> object:
     return arguments
 
 
+def _tool_search_output_content(item: dict) -> str:
+    names: list[str] = []
+    tools = item.get("tools")
+    if isinstance(tools, list):
+        for namespace in tools:
+            if not isinstance(namespace, dict):
+                continue
+            namespace_name = namespace.get("name")
+            if isinstance(namespace_name, str) and namespace_name:
+                names.append(namespace_name)
+            nested_tools = namespace.get("tools")
+            if isinstance(nested_tools, list):
+                for tool in nested_tools:
+                    if not isinstance(tool, dict):
+                        continue
+                    tool_name = tool.get("name")
+                    if isinstance(tool_name, str) and tool_name:
+                        if isinstance(namespace_name, str) and namespace_name:
+                            names.append(f"{namespace_name}.{tool_name}")
+                        else:
+                            names.append(tool_name)
+    if names:
+        return "tool_search_output\n" + "\n".join(names)
+    if isinstance(tools, list):
+        return json.dumps(tools, ensure_ascii=False)
+    return json.dumps(item, ensure_ascii=False)
+
+
+def _response_call_tool_name(item: dict) -> str:
+    item_type = item.get("type")
+    if item_type == "tool_search_call":
+        return "tool_search"
+    item_name = item.get("name")
+    if isinstance(item_name, str) and item_name:
+        return item_name
+    if isinstance(item_type, str) and item_type.endswith("_call"):
+        return item_type[: -len("_call")]
+    return ""
+
+
+def _is_response_call_item(item: dict) -> bool:
+    item_type = item.get("type")
+    return isinstance(item_type, str) and item_type.endswith("_call")
+
+
+def _response_call_input(item: dict) -> object:
+    if "arguments" in item:
+        return _parse_function_call_arguments(item.get("arguments"))
+    return {
+        key: value for key, value in item.items() if key not in {"id", "type", "status", "call_id", "name", "execution"}
+    }
+
+
+def _is_response_tool_result_item(item: dict) -> bool:
+    item_type = item.get("type")
+    return item_type == "tool_search_output" or (isinstance(item_type, str) and item_type.endswith("_call_output"))
+
+
+def _response_tool_result_content(item: dict) -> str:
+    if item.get("type") == "tool_search_output":
+        return _tool_search_output_content(item)
+    if "output" in item:
+        output = item.get("output")
+        if isinstance(output, str):
+            return output
+        return json.dumps(output, ensure_ascii=False)
+    return json.dumps(
+        {key: value for key, value in item.items() if key not in {"id", "type", "status", "call_id", "execution"}},
+        ensure_ascii=False,
+    )
+
+
 def _extract_request_messages(body: dict) -> list[dict]:
     if not isinstance(body, dict):
         return []
@@ -151,22 +223,22 @@ def _extract_request_messages(body: dict) -> list[dict]:
         if not isinstance(item, dict):
             continue
         item_type = item.get("type")
-        if item_type == "function_call":
+        if _is_response_call_item(item):
             normalized.append(
                 {
                     "role": "assistant",
                     "content": [
                         {
                             "type": "tool_use",
-                            "name": item.get("name", ""),
-                            "input": _parse_function_call_arguments(item.get("arguments")),
+                            "name": _response_call_tool_name(item),
+                            "input": _response_call_input(item),
                         }
                     ],
                 }
             )
             continue
-        if item_type == "function_call_output":
-            normalized.append({"role": "tool", "content": item.get("output", "")})
+        if _is_response_tool_result_item(item):
+            normalized.append({"role": "tool", "content": _response_tool_result_content(item)})
             continue
         if item_type not in (None, "message") and "role" not in item:
             continue
@@ -188,8 +260,22 @@ def _extract_response_tool_names(output: list) -> list[str]:
             for c in item.get("content") or []:
                 if isinstance(c, dict) and c.get("type") == "tool_use":
                     names.append(c.get("name", ""))
-        elif item.get("type") == "function_call":
-            names.append(item.get("name", ""))
+        elif _is_response_call_item(item):
+            names.append(_response_call_tool_name(item))
+    return names
+
+
+def _extract_response_tool_names_from_output_item_events(events: list[dict]) -> list[str]:
+    names: list[str] = []
+    for ev in events:
+        if _event_type(ev) != "response.output_item.done":
+            continue
+        data = _event_payload(ev)
+        if not isinstance(data, dict):
+            continue
+        item = data.get("item")
+        if isinstance(item, dict):
+            names.extend(_extract_response_tool_names([item]))
     return names
 
 
@@ -271,6 +357,8 @@ def _extract_metadata(record_json: str) -> dict | None:
                 response_tool_names.append(block.get("name", ""))
     else:
         response_tool_names.extend(_extract_response_tool_names(resp_body.get("output") or []))
+    if not response_tool_names:
+        response_tool_names.extend(_extract_response_tool_names_from_output_item_events(stream_events))
     if not response_tool_names:
         for ev in reversed(stream_events):
             if _event_type(ev) != "response.completed":

@@ -1215,16 +1215,98 @@ function mergeWebSocketResponseGroups(groups) {
   return { responseId: groups.map(group => group.responseId).filter(Boolean).join('+'), events };
 }
 
-function normalizeWebSocketDerivedInput(input) {
-  if (!Array.isArray(input)) return input;
-  return input.map(item => {
-    if (!item || typeof item !== 'object' || item.type !== 'function_call_output') return item;
+function parseResponseToolArguments(args) {
+  if (args === undefined || args === null || args === '') return {};
+  if (typeof args !== 'string') return args;
+  try { return JSON.parse(args); } catch(e) { return args; }
+}
+
+function toolSearchOutputContent(item) {
+  const names = [];
+  if (Array.isArray(item?.tools)) {
+    for (const namespace of item.tools) {
+      if (!namespace || typeof namespace !== 'object') continue;
+      const namespaceName = typeof namespace.name === 'string' ? namespace.name : '';
+      if (namespaceName) names.push(namespaceName);
+      if (!Array.isArray(namespace.tools)) continue;
+      for (const tool of namespace.tools) {
+        if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string' || !tool.name) continue;
+        names.push(namespaceName ? `${namespaceName}.${tool.name}` : tool.name);
+      }
+    }
+  }
+  if (names.length) return ['tool_search_output', ...names].join('\n');
+  if (Array.isArray(item?.tools)) return JSON.stringify(item.tools, null, 2);
+  if (item?.output !== undefined) return typeof item.output === 'string' ? item.output : JSON.stringify(item.output, null, 2);
+  return JSON.stringify(item || {}, null, 2);
+}
+
+function responseCallToolName(item) {
+  if (item?.type === 'tool_search_call') return 'tool_search';
+  if (typeof item?.name === 'string' && item.name) return item.name;
+  if (typeof item?.type === 'string' && item.type.endsWith('_call')) return item.type.slice(0, -'_call'.length);
+  return '';
+}
+
+function isResponseCallItem(item) {
+  return !!(item && typeof item === 'object' && typeof item.type === 'string' && item.type.endsWith('_call'));
+}
+
+function responseCallInput(item) {
+  if (Object.prototype.hasOwnProperty.call(item, 'arguments')) return parseResponseToolArguments(item.arguments);
+  const input = {};
+  for (const [key, value] of Object.entries(item || {})) {
+    if (['id', 'type', 'status', 'call_id', 'name', 'execution'].includes(key)) continue;
+    input[key] = value;
+  }
+  return input;
+}
+
+function isResponseToolResultItem(item) {
+  if (!item || typeof item !== 'object' || typeof item.type !== 'string') return false;
+  return item.type === 'tool_search_output' || item.type.endsWith('_call_output');
+}
+
+function responseToolResultContent(item) {
+  if (item?.type === 'tool_search_output') return toolSearchOutputContent(item);
+  if (Object.prototype.hasOwnProperty.call(item || {}, 'output')) {
+    return typeof item.output === 'string' ? item.output : JSON.stringify(item.output, null, 2);
+  }
+  const content = {};
+  for (const [key, value] of Object.entries(item || {})) {
+    if (['id', 'type', 'status', 'call_id', 'execution'].includes(key)) continue;
+    content[key] = value;
+  }
+  return JSON.stringify(content, null, 2);
+}
+
+function responseInputItemToMessage(item) {
+  if (!item || typeof item !== 'object') return item;
+  if (isResponseCallItem(item)) {
+    return {
+      type: 'message',
+      role: 'assistant',
+      content: [{
+        type: 'tool_use',
+        id: item.call_id || item.id || '',
+        name: responseCallToolName(item),
+        input: responseCallInput(item)
+      }]
+    };
+  }
+  if (isResponseToolResultItem(item)) {
     return {
       type: 'message',
       role: 'tool',
-      content: [{ type: 'tool_result', tool_use_id: item.call_id || '', content: item.output || '' }]
+      content: [{ type: 'tool_result', tool_use_id: item.call_id || '', content: responseToolResultContent(item) }]
     };
-  });
+  }
+  return item;
+}
+
+function normalizeWebSocketDerivedInput(input) {
+  if (!Array.isArray(input)) return input;
+  return input.map(responseInputItemToMessage);
 }
 
 function webSocketOutputMessages(events) {
@@ -1237,15 +1319,16 @@ function webSocketOutputMessages(events) {
   }
   items.sort((a, b) => a.outputIndex - b.outputIndex);
   for (const { item } of items) {
-    if (item.type === 'function_call') {
-      let input = item.arguments || {};
-      if (typeof input === 'string') {
-        try { input = JSON.parse(input); } catch(e) {}
-      }
+    if (isResponseCallItem(item)) {
       messages.push({
         type: 'message',
         role: 'assistant',
-        content: [{ type: 'tool_use', id: item.call_id || item.id || '', name: item.name || '', input }]
+        content: [{
+          type: 'tool_use',
+          id: item.call_id || item.id || '',
+          name: responseCallToolName(item),
+          input: responseCallInput(item)
+        }]
       });
     } else if (item.type === 'message') {
       messages.push({
@@ -1260,7 +1343,7 @@ function webSocketOutputMessages(events) {
 
 function isToolResultInputItem(item) {
   if (!item || typeof item !== 'object') return false;
-  if (item.type === 'function_call_output') return true;
+  if (isResponseToolResultItem(item)) return true;
   if (item.role !== 'tool') return false;
   const content = Array.isArray(item.content) ? item.content : [];
   return content.some(block => block?.type === 'tool_result');
@@ -1292,7 +1375,7 @@ function buildWebSocketHistoryInput(input, priorGroups, priorRequestBodies) {
   ]);
   const toolResults = normalized.filter(isToolResultInputItem);
   const priorOutputs = (priorGroups || []).flatMap(group => webSocketOutputMessages(group.events));
-  return [...regularMessages, ...priorOutputs, ...toolResults];
+  return uniqueMessages([...regularMessages, ...priorOutputs, ...toolResults]);
 }
 
 function requestBodiesForWebSocketEntry(entry) {
@@ -1326,7 +1409,7 @@ function requestBodyForWebSocketGroup(entry, groups, idx) {
 
 function bodyWithoutToolResultOnlyInput(body) {
   const next = cloneJson(body || {}) || {};
-  if (Array.isArray(next.input) && next.input.every(item => item?.type === 'function_call_output')) {
+  if (Array.isArray(next.input) && next.input.every(isToolResultInputItem)) {
     next.input = [];
   }
   return next;
@@ -3104,8 +3187,8 @@ function getResponsesContinuationInfo(entry) {
   const payload = getResponsePayload(entry) || {};
   const previousId = payload.previous_response_id || body.previous_response_id;
   if (!previousId) return null;
-  const messages = getMessages(body).filter(m => m.role === 'user' || m.role === 'tool');
-  if (messages.length > 0) return null;
+  const userMessages = getMessages(body).filter(m => m.role === 'user');
+  if (userMessages.length > 0) return null;
   const headers = entry?.request?.headers || {};
   return {
     response_id: payload.id || '',
@@ -3126,7 +3209,8 @@ function getMessages(body) {
       .filter(m => hasDisplayContent(m.content));
   }
   if (Array.isArray(body.input)) {
-    const messages = body.input.filter(item => {
+    const normalizedInput = normalizeWebSocketDerivedInput(body.input);
+    const messages = normalizedInput.filter(item => {
       if (!item || typeof item !== 'object') return false;
       if (typeof item.role !== 'string' || !item.role) return false;
       return item.type === undefined || item.type === 'message';
@@ -3206,8 +3290,8 @@ function normalizeResponseOutput(output) {
         if (c?.type === 'output_text') content.push({ type: 'text', text: c.text });
         else content.push(c);
       }
-    } else if (item.type === 'function_call') {
-      content.push({ type: 'tool_use', name: item.name, input: item.arguments ? (typeof item.arguments === 'string' ? (() => { try { return JSON.parse(item.arguments); } catch(e) { return item.arguments; } })() : item.arguments) : {} });
+    } else if (isResponseCallItem(item)) {
+      content.push({ type: 'tool_use', name: responseCallToolName(item), input: responseCallInput(item) });
     } else if (item.type === 'reasoning') {
       if (!item.summary) continue;
       const summaryText = Array.isArray(item.summary) ? item.summary.map(s => s?.text || '').join('\n') : (item.summary.text || JSON.stringify(item.summary));
