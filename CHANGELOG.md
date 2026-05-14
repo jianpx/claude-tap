@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+
+## [0.1.67] - 2026-05-14
+
+### Changed
+- feat(viewer): add collapsible JSON tree view
 ## [0.1.66] - 2026-05-14
 
 ### Changed
