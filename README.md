@@ -534,6 +534,15 @@ claude-tap export .traces/2026-02-28/trace_141557.jsonl -o trace.html
 claude-tap export <session-id> --format compact -o trace.ctap.json
 claude-tap export trace.ctap.json -o trace.html
 
+# Query trace data as JSON for agents and scripts (mirrors the dashboard API)
+claude-tap query sessions
+claude-tap query sessions --search opus --agent claude-code
+claude-tap query records <session-id>
+claude-tap query traces 2026-07-08
+claude-tap query dates
+claude-tap query export <session-id> --format jsonl
+claude-tap query --db /path/to/traces.sqlite3 sessions
+
 # Embed the exported viewer in an iframe with reduced chrome
 # trace.html?embed=1&hideHeader=1&hidePath=1&hideHistory=1&hideControls=1&density=compact&theme=light
 

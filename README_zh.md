@@ -527,6 +527,15 @@ claude-tap export .traces/2026-02-28/trace_141557.jsonl -o trace.html
 claude-tap export <session-id> --format compact -o trace.ctap.json
 claude-tap export trace.ctap.json -o trace.html
 
+# 以 JSON 查询 trace 数据，供 agent / 脚本消费（与 dashboard API 一一对应）
+claude-tap query sessions
+claude-tap query sessions --search opus --agent claude-code
+claude-tap query records <session-id>
+claude-tap query traces 2026-07-08
+claude-tap query dates
+claude-tap query export <session-id> --format jsonl
+claude-tap query --db /path/to/traces.sqlite3 sessions
+
 # 在 iframe 中嵌入导出的查看器，并减少外层 chrome
 # trace.html?embed=1&hideHeader=1&hidePath=1&hideHistory=1&hideControls=1&density=compact&theme=light
 
