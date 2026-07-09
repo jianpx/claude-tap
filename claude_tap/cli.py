@@ -740,6 +740,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  claude-tap export trace.jsonl --format json Export as JSON\n"
             "  claude-tap export trace.jsonl -o out.html  Export as HTML viewer\n"
             "\n"
+            "query traces (machine-readable, for agents):\n"
+            "  claude-tap query sessions                  List trace sessions as JSON\n"
+            "  claude-tap query sessions --search opus    Search sessions by text\n"
+            "  claude-tap query records <id>              Show one session and its records\n"
+            "  claude-tap query agents                    List agent buckets\n"
+            "  claude-tap query dates                     List available trace dates\n"
+            "  claude-tap query traces 2026-07-08         List all records for a date\n"
+            "  claude-tap query export <id> --format jsonl  Export raw trace as NDJSON\n"
+            "  claude-tap query --db /path/to/traces.sqlite3 sessions  Query a custom database\n"
+            "\n"
             "update:\n"
             "  claude-tap update                          Upgrade claude-tap in place\n"
             "  claude-tap update --installer pip          Force pip-based upgrade\n"
@@ -1079,6 +1089,11 @@ def main_entry() -> None:
         from claude_tap.export import export_main
 
         sys.exit(export_main(sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        from claude_tap.query import query_main
+
+        sys.exit(query_main(sys.argv[2:]))
 
     if len(sys.argv) > 1 and sys.argv[1] == "update":
         sys.exit(update_main(sys.argv[2:]))
