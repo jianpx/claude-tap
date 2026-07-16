@@ -22,6 +22,7 @@ from claude_tap.dashboard import (
     _record_model,
     _record_response_text,
     _record_usage,
+    _redact_sensitive_text,
     _request_user_text,
     _response_events,
     _response_text,
@@ -2201,3 +2202,44 @@ async def test_kimi_code_model_probe_error_marks_probe_only_session_failed(trace
     assert payload is not None
     assert payload["session"]["status"] == "error"
     assert payload["session"]["error"] == "missing bearer token"
+
+
+def test_redact_url_query_preserves_bracketed_non_url_text() -> None:
+    """Non-URL text that urlsplit misreads as an invalid IPv6 netloc must not crash.
+
+    Regression for the session 9f3323bd crash: an Edit tool's ``new_string`` /
+    ``old_string`` holding Swift code that starts with a ``//`` comment and
+    contains array syntax like ``[String]`` plus an optional ``?`` made
+    ``urlsplit`` raise ``ValueError: Invalid IPv6 URL`` (Python 3.13+),
+    taking down ``claude-tap query records``.
+    """
+    swift_snippet = (
+        "        // subtitle\n"
+        "        func titlesOfSubtitle(of controller: PlayerControlViewController) -> [String]\n"
+        "        func selectionOfSubtitle(of controller: PlayerControlViewController) -> IndexPath?\n"
+        "        @objc optional func subtitleMenuSections(of controller: PlayerControlViewController) -> [SubtitleSection]\n"
+    )
+    # The exact text that produced the crash must pass through unchanged.
+    assert _redact_sensitive_text(swift_snippet) == swift_snippet
+
+    # Other bracketed, "//"-prefixed snippets that contain a "?" must not crash
+    # either, and non-sensitive text must survive verbatim.
+    for snippet in (
+        "// arr[i] ? x : y",
+        "let x = a[0] ? b : c",
+        "// see https://tools.ietf.org/html/rfc3986#section-3.2.2 [note]",
+    ):
+        assert _redact_sensitive_text(snippet) == snippet
+
+
+def test_redact_url_query_still_redacts_real_urls() -> None:
+    """Guard against the bracketed-text fix silently skipping real URLs."""
+    assert (
+        _redact_sensitive_text("https://oauth.example/callback?id_token=url-secret&state=ok")
+        == "https://oauth.example/callback?id_token=REDACTED&state=ok"
+    )
+    # Bracketed query keys are percent-encoded, not mistaken for an IPv6 host.
+    assert (
+        _redact_sensitive_text("https://example.com/path?arr[0]=value&access_token=secret")
+        == "https://example.com/path?arr%5B0%5D=value&access_token=REDACTED"
+    )

@@ -893,7 +893,14 @@ def _redact_sensitive_text(value: str, depth: int = 0) -> str:
 def _redact_url_query(value: str, depth: int = 0) -> str | None:
     if "?" not in value:
         return None
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        # urlsplit rejects a netloc containing "[" / "]" that is not a valid
+        # IPv6 address (Python 3.13+). Non-URL text such as code snippets that
+        # start with a "//" comment and contain array syntax like "[String]"
+        # trip this check, so treat them as non-URLs and fall through.
+        return None
     if not parsed.query or not _looks_like_url_or_path(value, parsed.path):
         return None
     redacted_query = _redact_query_string(parsed.query, depth)

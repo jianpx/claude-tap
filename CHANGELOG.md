@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `claude-tap query records` (and the dashboard records route) no longer crash with `ValueError: Invalid IPv6 URL` when redacting non-URL text such as code snippets that start with a `//` comment and contain array syntax like `[String]`. `urlsplit` rejects such text as an invalid IPv6 netloc on Python 3.13+; it is now treated as non-URL and passed through.
+
 
 
 ## [0.1.126] - 2026-07-01

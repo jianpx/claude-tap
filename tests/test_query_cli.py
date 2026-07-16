@@ -278,6 +278,53 @@ def test_query_records_not_found_exits_nonzero(trace_db, capsys) -> None:
     assert "session not found" in capsys.readouterr().err
 
 
+def test_query_records_bracketed_edit_tool_text_does_not_crash(trace_db, capsys) -> None:
+    """Regression: an Edit tool record whose ``new_string``/``old_string`` holds
+    Swift code (``//`` comment + ``[String]`` + ``IndexPath?``) made urlsplit
+    raise ``ValueError: Invalid IPv6 URL`` during redaction, crashing
+    ``query records``. The text must pass through verbatim instead.
+    """
+    store = get_trace_store()
+    session_started_at = datetime(2026, 7, 8, 8, 0, tzinfo=timezone.utc)
+    session_id = store.create_session(client="claude", proxy_mode="reverse", started_at=session_started_at)
+    swift_snippet = (
+        "        // subtitle\n"
+        "        func titlesOfSubtitle(of controller: PlayerControlViewController) -> [String]\n"
+        "        func selectionOfSubtitle(of controller: PlayerControlViewController) -> IndexPath?\n"
+        "        @objc optional func subtitleMenuSections(of controller: PlayerControlViewController) -> [SubtitleSection]\n"
+    )
+    store.append_record(
+        session_id,
+        {
+            "timestamp": "2026-07-08T08:00:00+00:00",
+            "request_id": "req_edit",
+            "turn": 1,
+            "capture": {"client": "claude", "proxy_mode": "reverse"},
+            "request": {"method": "POST", "path": "/v1/messages", "body": {"model": "claude-sonnet-4-6"}},
+            "response": {
+                "status": 200,
+                "body": {
+                    "model": "claude-sonnet-4-6",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Edit",
+                            "input": {"old_string": swift_snippet, "new_string": swift_snippet},
+                        }
+                    ],
+                },
+            },
+        },
+    )
+    store.finalize_session(session_id)
+
+    code, payload = _run_query(["records", session_id], capsys)
+    assert code == 0
+    content = payload["records"][0]["response"]["body"]["content"]
+    assert content[0]["input"]["old_string"] == swift_snippet
+    assert content[0]["input"]["new_string"] == swift_snippet
+
+
 def test_query_traces_by_date(trace_db, capsys) -> None:
     store = get_trace_store()
     _seed_store(store)
