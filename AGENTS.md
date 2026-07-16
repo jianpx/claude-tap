@@ -49,6 +49,7 @@ git config core.hooksPath .githooks
 6. 编码前必须执行 pre-work checklist，开 PR 前必须执行 pre-PR checklist。
 7. 不要留下仅本地存在的工作；你必须执行 `git add`、`git commit` 和 `git push`。
 8. 你必须使用 `gh pr create` 打开 GitHub PR。
+9. 测试时禁止改写用户的真实配置文件（`~/.claude/settings.json`、`~/.codex/config.toml`）。`uv run pytest tests/`（含 `tests/test_e2e.py`）以及 `e2e-test`/`real-e2e-test` skill 会以真实 HOME 启动 `claude-tap` 子进程，触发 `global_inject.enable()`，把 `~/.claude/settings.json` 改写为代理端口 + `ANTHROPIC_AUTH_TOKEN=dummy`（原文件备份为 `.tap-backup`）；若进程在 `disable()` 前被中断，用户正在运行的 AI agent 会因 `ANTHROPIC_BASE_URL` 指向已死端口而断连。本地开发只运行隔离单元测试（用 `CLOUDTAP_DB` 覆盖数据库、且从不启动代理的 `trace_db` fixture），例如 `uv run pytest tests/test_dashboard.py tests/test_query_cli.py -x --timeout=60`；验证真实数据时用只读 `claude-tap query records/sessions`。本条是对规则 1 全量 gate 的有意豁免；CI 环境可运行完整 gate。
 
 ## 标准目录
 
